@@ -74,14 +74,15 @@ var YAHOO_SECTORS = {
 var CAT_HEADERS = ['Ticker', 'Name', 'Asset type', 'Sector', 'Industry', 'Set by'];
 var UNCATEGORISED = 'Uncategorised';
 
-/** Sheets number formats for an amount in `ccy`, e.g. "S$"#,##0.00 */
+/** Sheets number format for an amount in `ccy`, e.g. "S$"#,##0.00 (signed: +/-) */
 function moneyFmt_(ccy, signed) {
-  var sym = '"' + ((CURRENCIES[ccy] || {}).symbol || ccy + ' ') + '"';
-  var n = sym + '#,##0.00';
-  var small = sym + '#,##0.00##'; // SGX prices like 0.885 keep their extra decimals
-  if (signed) return '+' + n + ';-' + n + ';' + n;
-  return small;
+  var sym = (CURRENCIES[ccy] || {}).symbol || ccy;
+  if (/^[A-Z]{2,}$/.test(sym)) sym += ' '; // "RM 5,000", not "RM5,000"
+  var n = '"' + sym + '"#,##0.00';
+  return signed ? '+' + n + ';-' + n + ';' + n : n;
 }
+/** Same, for per-share prices: SGX prices like 0.885 keep their extra decimals. */
+function priceFmt_(ccy) { return moneyFmt_(ccy).replace('#,##0.00', '#,##0.00##'); }
 
 var FMT = {
   USD: '$#,##0.00',

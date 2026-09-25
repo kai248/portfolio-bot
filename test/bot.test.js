@@ -296,6 +296,13 @@ scenario('groupSections: stocks then CFDs, USD first', () => {
   eq(sec, ['SHARES·USD:META', 'SHARES·SGD:BUOU', 'CFD·USD:AAPL'], 'sections');
 });
 
+scenario('groupSections: empty Shares · USD and CFDs · USD always shown', () => {
+  const only = g.computePositions([{ date: '2026-01-01', action: 'BUY', type: 'SHARES', ticker: 'META', currency: 'USD', qty: 1, price: 700, fee: 0 }]);
+  eq(g.groupSections(only).map(s => s.type + '·' + s.currency + ':' + s.positions.length), ['SHARES·USD:1', 'CFD·USD:0'], 'with shares');
+  eq(g.groupSections([]).map(s => s.type + '·' + s.currency), ['SHARES·USD', 'CFD·USD'], 'empty');
+  eq(g.moneyFmt_('MYR'), '"RM "#,##0.00', 'myr fmt'); eq(g.priceFmt_('SGD'), '"S$"#,##0.00##', 'sgd price fmt');
+});
+
 scenario('money formatting', () => {
   eq(g.money_(0.885, 'SGD'), 'S$0.885', 'sgx'); eq(g.money_(0.88, 'SGD'), 'S$0.88', 'sgx2');
   eq(g.money_(712.4, 'USD'), '$712.40', 'usd'); eq(g.money_(-5.5, 'USD'), '-$5.50', 'neg');

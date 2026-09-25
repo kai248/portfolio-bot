@@ -102,7 +102,8 @@ function appendTransaction_(t) {
   var r = sh.getLastRow() + 1;
   sh.getRange(r, 1, 1, row.length).setValues([row]);
   sh.getRange(r, TX.CASH).setFormulaR1C1(CASH_FLOW_R1C1);
-  sh.getRange(r, TX.PRICE, 1, 4).setNumberFormat(moneyFmt_(t.currency || 'USD'));
+  sh.getRange(r, TX.PRICE).setNumberFormat(priceFmt_(t.currency || 'USD'));
+  sh.getRange(r, TX.FEE, 1, 2).setNumberFormat(moneyFmt_(t.currency || 'USD'));
   sh.getRange(r, TX.CASH).setNumberFormat(moneyFmt_(t.currency || 'USD', true));
   return id;
 }
@@ -211,7 +212,10 @@ function groupSections(positions) {
       return ao !== bo ? ao - bo : b.cost - a.cost;
     });
   });
-  if (!list.length) list.push({ type: 'SHARES', currency: BASE_CCY, positions: [] });
+  // Always show Shares · USD and CFDs · USD, even when empty, so the layout doesn't jump around
+  var has = function (type) { return list.some(function (g) { return g.type === type; }); };
+  if (!has('SHARES')) list.unshift({ type: 'SHARES', currency: BASE_CCY, positions: [] });
+  if (!has('CFD')) list.push({ type: 'CFD', currency: BASE_CCY, positions: [] });
   return list;
 }
 
@@ -392,9 +396,10 @@ function writeSection_(sh, startRow, title, sec, rateRow, cats) {
 
   var n = sub - first + 1;
   var money = moneyFmt_(ccy), signed = moneyFmt_(ccy, true);
-  sh.getRange(first, 2, n, 1).setNumberFormat(money);
+  sh.getRange(first, 2, n, 1).setNumberFormat(priceFmt_(ccy));
   sh.getRange(first, 3, n, 1).setNumberFormat(FMT.QTY);
-  sh.getRange(first, 4, n, 2).setNumberFormat(money);
+  sh.getRange(first, 4, n, 1).setNumberFormat(priceFmt_(ccy));
+  sh.getRange(first, 5, n, 1).setNumberFormat(money);
   sh.getRange(first, 6, n, 1).setNumberFormat(FMT.PCT);
   sh.getRange(first, 7, n, 1).setNumberFormat(money);
   sh.getRange(first, 8, n, 1).setNumberFormat(FMT.PCT);

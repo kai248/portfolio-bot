@@ -125,7 +125,8 @@ function formatTxRows_(sh, firstRow, count) {
   ccys.forEach(function (c, i) {
     var ccy = CURRENCIES[String(c[0]).toUpperCase()] ? String(c[0]).toUpperCase() : null;
     if (!ccy) return;
-    sh.getRange(firstRow + i, TX.PRICE, 1, 3).setNumberFormat(moneyFmt_(ccy));
+    sh.getRange(firstRow + i, TX.PRICE).setNumberFormat(priceFmt_(ccy));
+    sh.getRange(firstRow + i, TX.FEE, 1, 2).setNumberFormat(moneyFmt_(ccy));
     sh.getRange(firstRow + i, TX.CASH).setNumberFormat(moneyFmt_(ccy, true));
   });
 }
