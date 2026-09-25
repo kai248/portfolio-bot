@@ -40,7 +40,23 @@ Do this on a laptop. Once it's set up, you only need your phone.
    - Who has access: **Anyone**. Telegram has to be able to reach it. The bot ignores everyone except you (step 5).
    - **Deploy**, then copy the **Web app URL** (it ends in `/exec`).
 2. Add another script property: `WEBAPP_URL` = *(that URL)*.
-3. Choose the **`connectTelegram`** function and click **▶ Run**. The log should show `"ok":true`.
+3. Set up the relay (next section), then choose the **`connectTelegram`** function and click **▶ Run**. The log should show `"ok":true`.
+
+> **Only ever click "New deployment" once.** For code updates use **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**. The URL then stays the same.
+
+## 4b. Add the relay (free, about 5 minutes, needed for reliable replies)
+
+Apps Script answers Telegram with a "302 redirect". Telegram treats that as a failure and keeps re-sending old messages, so new ones get stuck. A tiny free Cloudflare Worker fixes this: it answers Telegram "OK" instantly and passes each message on to your script.
+
+1. Create a free account at **dash.cloudflare.com** (sign up yourself; no card needed).
+2. **Workers & Pages → Create → Create Worker** (the "Hello World" template). Name it e.g. `portfolio-relay` → **Deploy**.
+3. Click **Edit code**. Delete everything and paste in [`relay/worker.js`](relay/worker.js).
+4. On the `APPS_SCRIPT_URL` line, replace `PASTE_YOUR_APPS_SCRIPT_EXEC_URL_HERE` with your web app URL (the `/exec` one, inside the quotes) → **Deploy**.
+5. Copy the worker's URL, e.g. `https://portfolio-relay.yourname.workers.dev`. Opening it in a browser should show *"Portfolio bot relay is running."*
+6. In Apps Script, add a script property: `RELAY_URL` = *(the worker URL)*.
+7. Run **`connectTelegram`**. Then **Portfolio → Check Telegram connection** should show the worker URL, with no `last_error_message` and `pending_update_count: 0`.
+
+If you ever make a new deployment with a different `/exec` URL, update it in the worker code too.
 
 ## 5. Lock the bot to your account
 
@@ -95,7 +111,7 @@ The URL stays the same, so you don't need to reconnect Telegram.
 ## Troubleshooting
 
 - **Bot doesn't reply:** go to **Portfolio → Check Telegram connection** and look at `last_error_message`. Then check the **Bot Log** tab and **Apps Script → Executions**.
-- **You see `Wrong response from the webhook: 302`:** this is normal for Apps Script. The bot ignores duplicate deliveries. If replies stop arriving, run **`usePolling`** once. Replies then take up to about 1 minute, but it's very reliable. Run `connectTelegram` to switch back.
+- **You see `Wrong response from the webhook: 302`, or messages get no reply:** Telegram is talking to Apps Script directly. Set up the relay (step 4b) and run `connectTelegram`. As a last resort, run **`usePolling`** once. Replies then take up to about 1 minute. Run `connectTelegram` to switch back.
 - **A price shows blank or "Loading":** GOOGLEFINANCE is sometimes slow. Wait a moment, or use **Portfolio → Rebuild holdings**.
 - **An SGX price is blank:** use **Portfolio → Refresh SGX / non-US prices** and check the **Prices** tab. If Yahoo is blocking requests, the **Bot Log** shows `PRICE-ERROR` rows.
 - **A ticker isn't recognised:** type it exactly (e.g. `SOFI`), or add a row in **Settings → Ticker aliases**.

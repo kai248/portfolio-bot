@@ -112,11 +112,17 @@ function esc_(s) {
 // One-off setup helpers - run these from the Apps Script editor
 // ---------------------------------------------------------------------------
 
-/** Points Telegram at this script's web app. Run after every NEW deployment URL. */
+/**
+ * Points Telegram at the bot. Uses the Cloudflare relay (Script Property RELAY_URL)
+ * when set - recommended, see relay/worker.js - otherwise the web app URL directly.
+ * Run again after setting RELAY_URL or after a NEW deployment URL.
+ */
 function connectTelegram() {
   var props = PropertiesService.getScriptProperties();
-  var url = props.getProperty('WEBAPP_URL') || ScriptApp.getService().getUrl();
-  if (!url || !/\/exec$/.test(url)) {
+  var relay = String(props.getProperty('RELAY_URL') || '').trim();
+  var url = relay || props.getProperty('WEBAPP_URL') || ScriptApp.getService().getUrl();
+  if (relay && !/^https:\/\//.test(relay)) throw new Error('RELAY_URL must start with https:// - got: ' + relay);
+  if (!relay && (!url || !/\/exec$/.test(url))) {
     throw new Error('No web app URL found. Deploy the script as a Web app first (see SETUP), ' +
       'or add a Script Property WEBAPP_URL with the ".../exec" link. Got: ' + url);
   }
