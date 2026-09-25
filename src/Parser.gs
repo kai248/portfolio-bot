@@ -20,14 +20,17 @@ var SHORT_WORDS = ['short', 'shorted', 'shorting', 'shorts'];
 var CFD_WORDS = ['cfd', 'cfds'];
 var STOCK_WORDS = ['stock', 'stocks', 'equity', 'equities'];
 
-var PRICE_BEFORE = ['@', 'at', 'for', 'price', 'px', 'avg', 'average', 'cost', '$'];
+/** Words that say which market/currency you mean. */
+var CURRENCY_WORDS = { usd: 'USD', sgd: 'SGD', sgx: 'SGD', hkd: 'HKD', hkex: 'HKD' };
+
+var PRICE_BEFORE =['@', 'at', 'for', 'price', 'px', 'avg', 'average', 'cost', '$'];
 var PRICE_AFTER = ['each', 'per', 'ea', 'apiece'];
 var QTY_BEFORE = ['x', 'qty', 'quantity', 'vol', 'volume'];
 var QTY_AFTER = ['shares', 'share', 'units', 'unit', 'x', 'pcs', 'sh'];
 var TOTAL_BEFORE = ['total', 'totaling', 'totalling', 'altogether'];
 
 var FILLER_WORDS = ['i', 'im', 'ive', 'id', 'just', 'jus', 'juz', 'some', 'more', 'of', 'the',
-  'a', 'an', 'on', 'in', 'ibkr', 'usd', 'us', 'me', 'my', 'now', 'and', 'n', 'with', 'again',
+  'a', 'an', 'on', 'in', 'ibkr', 'us', 'me', 'my', 'now', 'and', 'n', 'with', 'again',
   'another', 'few', 'around', 'about', 'approx', 'roughly', '~', 'to', 'from', 'u', 'r',
   'ur', 'ya', 'yeah', 'yes', 'ok', 'okay', 'pls', 'please', 'hey', 'hi', 'bro', 'lol',
   'earlier', 'this', 'morning', 'afternoon', 'tonight', 'night', 'already', 'its', 'it',
@@ -97,6 +100,7 @@ function parseMessage(text, ctx) {
   var out = {
     action: null, actionConflict: false, short: false, type: null,
     ticker: null, tickerSource: null, tickerChoices: [], tickerToken: null, tickerFromFuzzy: false,
+    currency: null, searchText: null,
     qty: null, price: null, fee: null, amount: null, total: null,
     ambiguousNumber: null, date: null, extraNumbers: [], leftovers: []
   };
@@ -127,17 +131,18 @@ function parseMessage(text, ctx) {
     var low = t.low;
     var raw = t.raw;
 
-    if (/^\$[a-z][a-z.]*$/i.test(raw)) { // "$ON"
+    if (/^\$[a-z0-9][a-z0-9.]*$/i.test(raw)) { // "$ON", "$9ci"
       tickerHits.push({ tickers: [raw.slice(1).toUpperCase()], idx: t.idx, token: low.slice(1) });
       t.used = true; return;
     }
+    if (CURRENCY_WORDS[low]) { if (!out.currency) out.currency = CURRENCY_WORDS[low]; t.kw = true; return; }
     if (inList_(BUY_WORDS, low)) { flags.buy = true; t.kw = true; return; }
     if (inList_(SELL_WORDS, low)) { flags.sell = true; t.kw = true; return; }
     if (inList_(SHORT_WORDS, low)) { out.short = true; t.kw = true; return; }
     if (inList_(FEE_WORDS, low)) { flags.fee = true; t.kw = true; t.feeMarker = true; return; }
     if (inList_(DIV_WORDS, low)) { flags.div = true; t.kw = true; return; }
     if (inList_(CFD_WORDS, low)) { out.type = 'CFD'; t.kw = true; return; }
-    if (inList_(STOCK_WORDS, low)) { if (!out.type) out.type = 'STOCK'; t.kw = true; return; }
+    if (inList_(STOCK_WORDS, low)) { if (!out.type) out.type = 'SHARES'; t.kw = true; return; }
 
     var isCommonWord = inList_(COMMON_WORD_TICKERS, low) || inList_(FILLER_WORDS, low);
     if (isCommonWord) {
@@ -160,8 +165,9 @@ function parseMessage(text, ctx) {
   unknown.forEach(function (t) {
     var act = fuzzyAction_(t.low);
     if (act) { flags[act] = true; t.kw = true; return; }
-    var sugg = fuzzyTicker_(t.low, aliases, known);
-    var maybeTicker = /^[a-z]{1,5}(\.[a-z])?$/.test(t.low);
+    var hasDigit = /\d/.test(t.low);
+    var sugg = hasDigit ? [] : fuzzyTicker_(t.low, aliases, known);
+    var maybeTicker = /^[a-z0-9]{1,5}(\.[a-z])?$/.test(t.low) && /[a-z]/.test(t.low);
     if (sugg.length) fuzzyCandidates.push({ tok: t, sugg: sugg });
     else if (maybeTicker) fuzzyCandidates.push({ tok: t, sugg: [], maybe: true });
     else out.leftovers.push(t.raw);
@@ -198,6 +204,20 @@ function parseMessage(text, ctx) {
       if (out.leftovers.indexOf(c.tok.raw) < 0 && c.tok.low !== out.tickerToken) out.leftovers.push(c.tok.raw);
     });
   }
+
+  // Words we couldn't place. If needed the bot searches Yahoo with them ("rocket lab", "mapletree").
+  var unplaced = unknown.filter(function (t) { return !t.kw; });
+  if (unplaced.length && out.tickerSource !== 'known') {
+    out.searchText = unplaced.map(function (t) { return t.low; }).join(' ');
+    if (out.tickerSource === 'guess' && unplaced.length > 1) {
+      // Several unknown words read better as a company name than "LAB" as a ticker.
+      out.ticker = null; out.tickerSource = null; out.tickerToken = null;
+    }
+    if (!out.ticker && !out.tickerChoices.length) tickerIdx = unplaced[0].idx;
+  }
+
+  out.currencyExplicit = !!out.currency;
+  if (!out.currency && out.ticker && SGX_TICKERS[out.ticker]) out.currency = 'SGD';
 
   // 6) action
   if (out.short) {
@@ -261,13 +281,18 @@ function tokenize_(text) {
   var s = String(text || '');
   s = s.replace(/[‘’']/g, '');
   s = s.replace(/(\d),(\d{3})/g, '$1$2');
+  s = s.replace(/\b(s|us|hk)\$/gi, function (m, p) {   // "s$0.88" -> "sgd $0.88"
+    return ' ' + { s: 'sgd', us: 'usd', hk: 'hkd' }[p.toLowerCase()] + ' $';
+  });
   s = s.replace(/@/g, ' @ ');
   s = s.replace(/(\d)\$/g, '$1 ');            // "500$" -> "500"
   s = s.replace(/\$\s+(\d)/g, '$$$1');          // "$ 500" -> "$500"
-  s = s.replace(/(\d)([a-zA-Z])/g, '$1 $2');  // "1meta" -> "1 meta"
-  s = s.replace(/([a-zA-Z])(\d)/g, '$1 $2');  // "meta3" -> "meta 3"
   s = s.replace(/[,!?;:()"\[\]{}+=*]/g, ' ');
-  var parts = s.split(/\s+/);
+  var parts = [];
+  s.split(/\s+/).forEach(function (w) {
+    w = w.replace(/^[.\-]+|[.\-]+$/g, '');
+    if (w) splitWord_(w).forEach(function (p) { parts.push(p); });
+  });
   var toks = [];
   parts.forEach(function (p) {
     p = p.replace(/^[.\-]+|[.\-]+$/g, '');
@@ -280,6 +305,38 @@ function tokenize_(text) {
     });
   });
   return toks;
+}
+
+/**
+ * Splits "1meta" -> "1 meta" and "meta3" -> "meta 3", but keeps SGX codes
+ * like D05, C38U, A17U, ME8U, 9CI, 5E2 in one piece.
+ */
+function splitWord_(w) {
+  if (w.charAt(0) === '$' || !/\d/.test(w) || !/[a-z]/i.test(w)) return [w];
+  if (looksLikeSgxCode_(w)) return [w];
+  return w.replace(/(\d)([a-zA-Z])/g, '$1 $2').replace(/([a-zA-Z])(\d)/g, '$1 $2').split(' ');
+}
+
+function looksLikeSgxCode_(w) {
+  var low = w.toLowerCase();
+  if (SGX_TICKERS[w.toUpperCase()]) return true;
+  var known = buildKnownSet_();
+  var markers = ['x'].concat(QTY_BEFORE, PRICE_BEFORE, TOTAL_BEFORE, FEE_WORDS);
+  var m = low.match(/^([a-z]{1,2})(\d{1,2})([a-z]{0,2})$/); // D05, BN4, C6L, C38U, ME8U
+  if (m) {
+    var pre = m[1];
+    if (inList_(markers, pre)) return false;
+    if (m[3]) return true;
+    if (pre.length === 2) return !(inList_(FILLER_WORDS, pre) || known[pre.toUpperCase()] || NAME_ALIASES[pre]);
+    return m[2].length === 2; // single letter + 2 digits: D05, U11, Z74
+  }
+  m = low.match(/^(\d)([a-z]{1,2})(\d?)$/); // 9CI, 5E2
+  if (m) {
+    var suf = m[2];
+    return !(inList_(markers, suf) || inList_(FILLER_WORDS, suf) || /^(st|nd|rd|th|k|m)$/.test(suf) ||
+      known[suf.toUpperCase()] || NAME_ALIASES[suf]);
+  }
+  return false;
 }
 
 function extractDate_(toks, todayIso) {
@@ -426,6 +483,7 @@ function fuzzyTicker_(word, aliases, known) {
 function buildAliasMap_(userAliases) {
   var m = {};
   Object.keys(NAME_ALIASES).forEach(function (k) { m[k] = NAME_ALIASES[k]; });
+  Object.keys(SGX_ALIASES).forEach(function (k) { m[k] = SGX_ALIASES[k]; });
   Object.keys(userAliases || {}).forEach(function (k) {
     var key = String(k).trim().toLowerCase();
     var val = String(userAliases[k]).trim().toUpperCase();
@@ -442,6 +500,7 @@ function buildKnownSet_() {
     asList_(NAME_ALIASES[k]).forEach(function (t) { s[t] = true; });
   });
   EXTRA_TICKERS.forEach(function (t) { s[t] = true; });
+  Object.keys(SGX_TICKERS).forEach(function (t) { s[t] = true; });
   KNOWN_CACHE_ = s;
   return s;
 }

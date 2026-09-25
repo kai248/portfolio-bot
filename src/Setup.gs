@@ -14,7 +14,9 @@ function setup() {
   var log = ensureSheet_(ss, SHEETS.LOG, 3);
   var set = ensureSheet_(ss, SHEETS.SET, 4);
   var hist = ensureSheet_(ss, SHEETS.HIST, 5);
-  var quote = ensureSheet_(ss, SHEETS.QUOTE, 6);
+  var prices = ensureSheet_(ss, SHEETS.PRICES, 6);
+  var cats = ensureSheet_(ss, SHEETS.CATS, 3);
+  var quote = ensureSheet_(ss, SHEETS.QUOTE, 8);
 
   // Remove the blank default tab if it's still there
   ['Sheet1', 'Hoja 1', 'Feuille 1'].forEach(function (n) {
@@ -26,10 +28,13 @@ function setup() {
   setupLog_(log);
   setupSettings_(set);
   setupHistory_(hist);
+  setupPrices_(prices);
+  setupCategories_(cats);
   quote.hideSheet();
 
-  rebuildHoldings_();
   setupDashboard_(dash);
+  // Look up categories for anything you already hold (also rebuilds Holdings, which fills the Dashboard)
+  try { categoriseAll(); } catch (err) { console.warn('Categorising skipped: ' + err); rebuildHoldings_(); }
   setupTriggers_();
 
   ss.setActiveSheet(dash);
@@ -43,26 +48,97 @@ function ensureSheet_(ss, name, index) {
 }
 
 function setupTransactions_(sh) {
+  migrateTransactions_(sh);
   sh.getRange(1, 1, 1, TX_HEADERS.length).setValues([TX_HEADERS])
     .setFontWeight('bold').setBackground('#e8eaed').setWrap(true);
   sh.setFrozenRows(1);
   var n = sh.getMaxRows() - 1;
   sh.getRange(2, TX.DATE, n, 1).setNumberFormat(FMT.DATE);
   sh.getRange(2, TX.QTY, n, 1).setNumberFormat(FMT.QTY);
-  sh.getRange(2, TX.PRICE, n, 4).setNumberFormat(FMT.USD);
-  sh.getRange(2, TX.CASH, n, 1).setNumberFormat(FMT.USD_SIGNED);
+  sh.getRange(2, TX.PRICE, n, 4).setNumberFormat('#,##0.00##');
+  sh.getRange(2, TX.CASH, n, 1).setNumberFormat('+#,##0.00;-#,##0.00;0.00');
   // Dropdowns keep hand edits valid
-  sh.getRange(2, TX.ACTION, n, 1).setDataValidation(
-    SpreadsheetApp.newDataValidation().requireValueInList(ACTIONS, true).setAllowInvalid(false).build());
-  sh.getRange(2, TX.TYPE, n, 1).setDataValidation(
-    SpreadsheetApp.newDataValidation().requireValueInList(TYPES, true).setAllowInvalid(false).build());
-  var widths = [95, 80, 70, 70, 80, 95, 80, 95, 110, 260, 140, 80];
+  var list = function (values) {
+    return SpreadsheetApp.newDataValidation().requireValueInList(values, true).setAllowInvalid(false).build();
+  };
+  sh.getRange(2, TX.ACTION, n, 1).setDataValidation(list(ACTIONS));
+  sh.getRange(2, TX.TYPE, n, 1).setDataValidation(list(TYPES));
+  sh.getRange(2, TX.CCY, n, 1).setDataValidation(list(Object.keys(CURRENCIES)));
+  sh.getRange(2, TX.TICKER, n, 1).clearDataValidations();
+  var widths = [95, 80, 70, 70, 75, 80, 90, 75, 90, 100, 260, 140, 80];
   widths.forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
-  sh.getRange(1, TX.CASH).setNote('Money out of your account is negative. Calculated from the row - don\'t type here.');
+  sh.getRange(1, TX.CASH).setNote('In the row\'s currency. Money out of your account is negative. ' +
+    'Calculated from the row - don\'t type here.');
   sh.getRange(1, TX.AMOUNT).setNote('Only for FEE and DIVIDEND rows.');
-  // Fill the cash-flow formula for any rows typed in by hand
+  sh.getRange(1, TX.CCY).setNote('USD for US stocks, SGD for SGX stocks. Price, Fee and Amount are in this currency.');
+  sh.getRange(1, TX.TICKER).setNote('Plain ticker: AAPL, not AAPLn (IBKR\'s CFD name). SGX codes like D05, BUOU.');
+  // Fill the cash-flow formula (and currency formats) for rows typed in by hand
   var last = sh.getLastRow();
-  if (last >= 2) sh.getRange(2, TX.CASH, last - 1, 1).setFormulaR1C1(CASH_FLOW_R1C1);
+  if (last >= 2) {
+    sh.getRange(2, TX.CASH, last - 1, 1).setFormulaR1C1(CASH_FLOW_R1C1);
+    formatTxRows_(sh, 2, last - 1);
+  }
+}
+
+/** Older sheets had no Currency column: insert it after Ticker and mark existing rows USD. */
+function migrateTransactions_(sh) {
+  migrateStockToShares_(sh);
+  if (sh.getLastColumn() < 5) return;
+  var head = sh.getRange(1, 1, 1, 5).getValues()[0];
+  if (String(head[3]) !== 'Ticker' || String(head[4]) === 'Currency') return;
+  sh.insertColumnAfter(TX.TICKER);
+  sh.getRange(1, TX.CCY).setValue('Currency');
+  var last = sh.getLastRow();
+  if (last >= 2) {
+    var tickers = sh.getRange(2, TX.TICKER, last - 1, 1).getValues();
+    sh.getRange(2, TX.CCY, last - 1, 1).setValues(tickers.map(function (t) { return [t[0] ? 'USD' : '']; }));
+  }
+  console.log('Transactions: added a Currency column (existing rows set to USD).');
+}
+
+/** The Type column used to say STOCK; it now says SHARES (vs CFD). */
+function migrateStockToShares_(sh) {
+  var last = sh.getLastRow();
+  if (last < 2) return;
+  var r = sh.getRange(2, TX.TYPE, last - 1, 1);
+  var vals = r.getValues(), changed = false;
+  vals.forEach(function (v) { if (String(v[0]).toUpperCase() === 'STOCK') { v[0] = 'SHARES'; changed = true; } });
+  if (changed) { r.clearDataValidations(); r.setValues(vals); console.log('Transactions: STOCK renamed to SHARES.'); }
+}
+
+function setupCategories_(sh) {
+  sh.getRange(1, 1, 1, CAT_HEADERS.length).setValues([CAT_HEADERS]).setFontWeight('bold').setBackground('#e8eaed');
+  sh.setFrozenRows(1);
+  var n = sh.getMaxRows() - 1;
+  sh.getRange(2, 3, n, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(ASSET_TYPES, true).setAllowInvalid(false).build());
+  sh.getRange(2, 4, n, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+    .requireValueInList(SECTORS.map(function (x) { return x[0]; }), true).setAllowInvalid(false).build());
+  [80, 260, 100, 190, 220, 70].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
+  sh.getRange('H1').setValue('One row per ticker. auto = looked up on Yahoo, you = set by you. ' +
+    'Edit anything here and Holdings updates. ETFs do not need a sector.').setFontColor('#80868b');
+}
+
+/** Shows each row's money columns with its own currency symbol. */
+function formatTxRows_(sh, firstRow, count) {
+  var ccys = sh.getRange(firstRow, TX.CCY, count, 1).getValues();
+  ccys.forEach(function (c, i) {
+    var ccy = CURRENCIES[String(c[0]).toUpperCase()] ? String(c[0]).toUpperCase() : null;
+    if (!ccy) return;
+    sh.getRange(firstRow + i, TX.PRICE, 1, 3).setNumberFormat(moneyFmt_(ccy));
+    sh.getRange(firstRow + i, TX.CASH).setNumberFormat(moneyFmt_(ccy, true));
+  });
+}
+
+function setupPrices_(sh) {
+  sh.getRange(1, 1, 1, PRICE_HEADERS.length).setValues([PRICE_HEADERS])
+    .setFontWeight('bold').setBackground('#e8eaed');
+  sh.setFrozenRows(1);
+  sh.getRange('H1').setValue('Prices for non-US stocks (SGX…) from Yahoo Finance. Refreshed every 15 min ' +
+    'during market hours and whenever holdings change. US stocks use Google Finance directly.')
+    .setFontColor('#80868b');
+  sh.getRange(2, 2, sh.getMaxRows() - 1, 3).setNumberFormat('#,##0.00##');
+  [130, 90, 110, 80, 80, 260, 130].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
 }
 
 function setupLog_(sh) {
@@ -105,8 +181,8 @@ function setupHistory_(sh) {
 
 function setupDashboard_(sh) {
   sh.getCharts().forEach(function (c) { sh.removeChart(c); });
-  sh.getRange('A1:I30').breakApart();
-  sh.getRange('A1:I5').clear();
+  sh.getRange('A1:I80').breakApart();
+  sh.getRange('A1:I31').clear();
 
   sh.getRange('A1').setValue('Portfolio').setFontSize(20).setFontWeight('bold');
   sh.getRange('A2').setFormula('="Live prices via Google Finance (up to ~20 min delayed) · USD/MYR "&TEXT(Holdings!H4,"0.0000")')
@@ -128,6 +204,11 @@ function setupDashboard_(sh) {
     sh.setColumnWidth(col, 150);
   });
   sh.getRange(4, 1, 2, kpis.length).setBackground('#f8f9fa');
+
+  // By-currency block (rows 9-14 are filled by rebuildHoldings_)
+  sh.getRange('A7').setValue('By currency').setFontSize(12).setFontWeight('bold');
+  sh.getRange('A8:G8').setValues([['Currency', 'Worth', 'P/L', 'P/L %', 'Today', 'Worth (USD)', '% of portfolio']])
+    .setFontWeight('bold').setBackground('#e8eaed');
   sh.setRowHeight(5, 38);
   var pl = sh.getRange('C5:F5');
   sh.setConditionalFormatRules([
@@ -135,26 +216,32 @@ function setupDashboard_(sh) {
     SpreadsheetApp.newConditionalFormatRule().whenNumberLessThan(0).setFontColor(RED).setRanges([pl]).build()
   ]);
 
+  // By sector / by asset type tables (rows 18+ are filled by rebuildHoldings_)
+  sh.getRange('A16').setValue('By sector').setFontSize(12).setFontWeight('bold');
+  sh.getRange('A17:C17').setValues([['Sector', 'Worth (USD)', '% of portfolio']]).setFontWeight('bold').setBackground('#e8eaed');
+  sh.getRange('E16').setValue('By asset type').setFontSize(12).setFontWeight('bold');
+  sh.getRange('E17:G17').setValues([['Asset type', 'Worth (USD)', '% of portfolio']]).setFontWeight('bold').setBackground('#e8eaed');
+  sh.getRange('E23').setValue('ETFs have their own slice in the sector view. Fix any category on the Categories tab.')
+    .setFontColor('#80868b').setFontSize(9);
+
   // Chart data blocks (filled by rebuildHoldings_)
-  sh.getRange('K3:L3').setValues([['Position', 'Worth (USD)']]).setFontWeight('bold');
-  sh.getRange('N3:O3').setValues([['Type', 'Worth (USD)']]).setFontWeight('bold');
   sh.getRange('K2').setValue('Chart data - filled automatically').setFontColor('#80868b').setFontSize(9);
+  sh.getRange('K3:N3').setValues([['Position', 'Worth (USD)', 'Sector', 'Asset type']]).setFontWeight('bold');
+  sh.getRange('P3:Q3').setValues([['Held as', 'Worth (USD)']]).setFontWeight('bold');
+  sh.getRange('S3:T3').setValues([['Currency', 'Worth (USD)']]).setFontWeight('bold');
 
-  sh.insertChart(sh.newChart().setChartType(Charts.ChartType.PIE)
-    .addRange(sh.getRange('K3:L200'))
-    .setOption('title', 'Allocation by position')
-    .setOption('pieHole', 0.45)
-    .setOption('legend', { position: 'right' })
-    .setOption('width', 520).setOption('height', 320)
-    .setPosition(7, 1, 0, 0).build());
-
-  sh.insertChart(sh.newChart().setChartType(Charts.ChartType.PIE)
-    .addRange(sh.getRange('N3:O5'))
-    .setOption('title', 'Stocks vs CFDs (full size)')
-    .setOption('pieHole', 0.45)
-    .setOption('colors', ['#1a73e8', '#f29900'])
-    .setOption('width', 420).setOption('height', 320)
-    .setPosition(7, 5, 60, 0).build());
+  var pie = function (range, title, row, col, offX, width, extra) {
+    var b = sh.newChart().setChartType(Charts.ChartType.PIE).addRange(range)
+      .setOption('title', title).setOption('pieHole', 0.45)
+      .setOption('width', width).setOption('height', 300).setPosition(row, col, offX, 0);
+    Object.keys(extra || {}).forEach(function (k) { b = b.setOption(k, extra[k]); });
+    sh.insertChart(b.build());
+  };
+  pie(sh.getRange('A17:B31'), 'By sector', 33, 1, 0, 450, { legend: { position: 'right' } });
+  pie(sh.getRange('K3:L300'), 'By position', 33, 4, 10, 450, { legend: { position: 'right' } });
+  pie(sh.getRange('E17:F21'), 'By asset type', 50, 1, 0, 300);
+  pie(sh.getRange('S3:T20'), 'By currency', 50, 3, 10, 300);
+  pie(sh.getRange('P3:Q5'), 'Shares vs CFDs (full size)', 50, 5, 20, 300, { colors: ['#1a73e8', '#f29900'] });
 
   var hist = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEETS.HIST);
   sh.insertChart(sh.newChart().setChartType(Charts.ChartType.LINE)
@@ -164,7 +251,7 @@ function setupDashboard_(sh) {
     .setOption('legend', { position: 'bottom' })
     .setOption('series', { 0: { color: '#1a73e8' }, 1: { color: '#9aa0a6', lineDashStyle: [4, 4] } })
     .setOption('width', 960).setOption('height', 320)
-    .setPosition(24, 1, 0, 0).build());
+    .setPosition(67, 1, 0, 0).build());
 
   sh.setFrozenRows(0);
 }
@@ -172,20 +259,25 @@ function setupDashboard_(sh) {
 function setupTriggers_() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var fn = t.getHandlerFunction();
-    if (fn === 'snapshot' || fn === 'onTransactionsEdit') ScriptApp.deleteTrigger(t);
+    if (fn === 'snapshot' || fn === 'onTransactionsEdit' || fn === 'refreshPrices') ScriptApp.deleteTrigger(t);
   });
   // ~7am Malaysia time: after the US market has closed
   ScriptApp.newTrigger('snapshot').timeBased().everyDays(1).atHour(7).inTimezone(TZ).create();
+  // Non-US (SGX) prices from Yahoo; the function itself skips outside market hours
+  ScriptApp.newTrigger('refreshPrices').timeBased().everyMinutes(15).create();
   ScriptApp.newTrigger('onTransactionsEdit').forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet()).onEdit().create();
 }
 
 /** Keeps Holdings in sync when you edit the Transactions tab by hand. */
 function onTransactionsEdit(e) {
-  if (!e || !e.range || e.range.getSheet().getName() !== SHEETS.TX || e.range.getRow() < 2) return;
+  if (!e || !e.range || e.range.getRow() < 2) return;
   var sh = e.range.getSheet();
+  if (sh.getName() === SHEETS.CATS) return rebuildHoldings_();
+  if (sh.getName() !== SHEETS.TX) return;
   var r = e.range.getRow(), n = e.range.getNumRows();
   // Make sure hand-typed rows get the cash-flow formula too
   sh.getRange(r, TX.CASH, n, 1).setFormulaR1C1(CASH_FLOW_R1C1);
+  formatTxRows_(sh, r, n);
   rebuildHoldings_();
 }
 
@@ -196,6 +288,8 @@ function onTransactionsEdit(e) {
 function onOpen() {
   SpreadsheetApp.getUi().createMenu('Portfolio')
     .addItem('Rebuild holdings', 'menuRebuild')
+    .addItem('Refresh SGX / non-US prices', 'menuRefreshPrices')
+    .addItem('Categorise all tickers', 'categoriseAll')
     .addItem('Take snapshot now', 'snapshot')
     .addItem('Test a message (no saving)', 'menuTestMessage')
     .addSeparator()

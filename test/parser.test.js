@@ -60,6 +60,21 @@ t('overnight financing nvda 0.85', { action: 'FEE', ticker: 'NVDA', amount: 0.85
 t('dividend aapl 3.20', { action: 'DIVIDEND', ticker: 'AAPL', amount: 3.2 });
 t('got dividend from msft 5', { action: 'BUY', ticker: 'MSFT' }); // buy word wins; bot shows confirm so user sees it
 
+// SGX / currencies
+t('bought 1300 buou 0.88', { ticker: 'BUOU', qty: 1300, price: 0.88, currency: 'SGD', currencyExplicit: false });
+t('bought 100 d05 77.5', { ticker: 'D05', qty: 100, price: 77.5, currency: 'SGD' });
+t('bought 500 c38u @ 2.30', { ticker: 'C38U', qty: 500, price: 2.3 });
+t('bought 200 ME8U 2.4', { ticker: 'ME8U', qty: 200, price: 2.4 });
+t('bought 100 9ci 3.2', { ticker: '9CI', qty: 100, price: 3.2 });
+t('bought 100 ocbc 16', { ticker: 'O39', currency: 'SGD' });
+t('bought 10 d05 s$78', { ticker: 'D05', price: 78, currency: 'SGD', currencyExplicit: true });
+t('bought 10 kgxr sgx 1.2', { ticker: 'KGXR', currency: 'SGD', currencyExplicit: true });
+t('bought 3 meta usd 500', { ticker: 'META', currency: 'USD', price: 500, qty: 3 });
+t('bought 3 meta', { currency: null });
+t('bought 2 amd5', { ticker: 'AMD', qty: 2, price: 5 }); // "amd5" still splits: AMD is a US ticker
+t('x3 meta 500', { qty: 3, price: 500 });
+t('bought 2 meta 500 22nd sep', { date: '2026-09-22' });
+
 // Commands
 function c(msg, expect) {
   const r = g.parseCommand(msg, ctx);

@@ -60,6 +60,7 @@ function handleCallback_(messageId, data, settings) {
   var parts = data.split('|');
 
   if (parts[0] === 'u') return finishUndo_(messageId, parts[1], parts[2]);
+  if (parts[0] === 'c') return handleCategoryTap_(messageId, parts);
   if (parts[0] === 'l') {
     clearButtons_(messageId);
     if (parts[1] && parts[2]) {
@@ -83,7 +84,12 @@ function handleCallback_(messageId, data, settings) {
     case 't':
       if (arg === '?') { d.awaiting = 'ticker'; saveDraft_(d); return reply_('OK - reply with the ticker (e.g. <code>PLTR</code>).'); }
       if (d.choicesFuzzy && d.tickerToken) d.learn = { alias: d.tickerToken, ticker: arg };
-      d.ticker = arg; d.tickerOk = false; d.choices = []; d.choicesFuzzy = false;
+      if (d.choicesFromSearch && d.choiceInfo && d.choiceInfo[arg]) {
+        // Picked from a search: market is known, and so is the category. No alias is saved.
+        d.profile = d.choiceInfo[arg];
+        d.currency = parts[3] || d.profile.currency; d.currencyExplicit = true;
+      }
+      d.ticker = arg; d.tickerOk = false; d.choices = []; d.choicesFuzzy = false; d.choicesFromSearch = false;
       break;
     case 'a': d.action = arg; break;
     case 'ap': d.action = arg; d.price = d.live; d.priceOk = true; break;
@@ -98,7 +104,14 @@ function handleCallback_(messageId, data, settings) {
     case 'fee': return askField_(d, 'fee');
     case 'ed': return showEditMenu_(d);
     case 'e':
-      if (arg === 'type') { d.type = d.type === 'CFD' ? 'STOCK' : 'CFD'; d.typeExplicit = true; d.qtyOk = false; break; }
+      if (arg === 'type') { d.type = d.type === 'CFD' ? 'SHARES' : 'CFD'; d.typeExplicit = true; d.qtyOk = false; break; }
+      if (arg === 'ccy') {
+        // Switch market (e.g. US <-> SGX); the ticker is re-checked on the new market.
+        var auto = Object.keys(CURRENCIES).filter(function (c) { return CURRENCIES[c].autoDetect; });
+        d.currency = auto[(auto.indexOf(d.currency) + 1) % auto.length];
+        d.currencyExplicit = true; d.tickerOk = false; d.live = null; d.priceOk = false; d.qtyOk = false;
+        break;
+      }
       return askField_(d, arg);
     case 'bk': break;
   }
@@ -116,7 +129,9 @@ function draftFromParse_(p, text, pctx) {
     action: p.actionConflict ? null : p.action,
     type: p.type, typeExplicit: !!p.type,
     ticker: p.ticker, tickerOk: false, name: null, live: null,
+    currency: p.currency, currencyExplicit: !!p.currencyExplicit,
     choices: p.tickerChoices || [], choicesFuzzy: !!p.tickerFromFuzzy, tickerToken: p.tickerToken,
+    searchText: p.searchText, searched: false, choicesFromSearch: false, choiceInfo: null, profile: null,
     qty: p.qty, price: p.price, fee: p.fee, amount: p.amount, total: p.total,
     ambiguous: p.ambiguousNumber, date: p.date || pctx.today,
     priceOk: false, qtyOk: false, awaiting: null, stage: null, learn: null
@@ -137,7 +152,7 @@ function saveDraft_(d) {
 function clearDraft_() { PropertiesService.getScriptProperties().deleteProperty('DRAFT'); }
 
 function isTrade_(d) { return d.action === 'BUY' || d.action === 'SELL'; }
-function typeOf_(d) { return d.type || (d.action === 'FEE' ? 'CFD' : 'STOCK'); }
+function typeOf_(d) { return d.type || (d.action === 'FEE' ? 'CFD' : 'SHARES'); }
 
 /**
  * Works out the next thing to ask. Sends exactly one message and saves the draft.
@@ -149,27 +164,64 @@ function step_(d, settings) {
   // 1. Which stock?
   if (!d.ticker) {
     if (d.choices && d.choices.length) {
-      var btns = d.choices.map(function (tk) { return [tk, d.id + '|t|' + tk]; });
-      var q = d.choicesFuzzy
-        ? 'Did you mean ' + d.choices.map(function (t) { return '<b>' + t + '</b>'; }).join(' / ') +
-          ' for "' + esc_(d.tickerToken) + '"?'
-        : 'Which one did you mean?';
+      var info = d.choiceInfo || {};
+      var q, rowsT;
+      if (d.choicesFromSearch) {
+        // One button per search result, e.g. "ME8U · Mapletree Industrial Trust · SGX"
+        q = '"' + esc_(d.searchText) + '" isn\'t in my list - I searched and found:';
+        rowsT = d.choices.map(function (tk) {
+          var x = info[tk];
+          return [[tk + ' · ' + String(x.name).slice(0, 32) + ' · ' + x.exchange, d.id + '|t|' + tk + '|' + x.currency]];
+        });
+      } else {
+        q = d.choicesFuzzy
+          ? 'Did you mean ' + d.choices.map(function (t) { return '<b>' + t + '</b>'; }).join(' / ') +
+            ' for "' + esc_(d.tickerToken) + '"?'
+          : 'Which one did you mean?';
+        rowsT = [d.choices.map(function (tk) { return [tk, d.id + '|t|' + tk]; })];
+      }
       d.awaiting = 'ticker'; saveDraft_(d);
-      return reply_(q, [btns, [['✏️ Something else', d.id + '|t|?'], ['❌ Cancel', d.id + '|x']]]);
+      return reply_(q, rowsT.concat([[['✏️ Type the ticker', d.id + '|t|?'], ['❌ Cancel', d.id + '|x']]]));
+    }
+    // Words we couldn't place ("rocket lab", "mapletree"): search Yahoo once
+    if (d.searchText && !d.searched) {
+      d.searched = true;
+      var found = yahooSearch_(d.searchText);
+      log_('SEARCH', d.searchText, found);
+      if (found.length) {
+        d.choices = found.map(function (x) { return x.ticker; });
+        d.choiceInfo = {};
+        found.forEach(function (x) { d.choiceInfo[x.ticker] = x; });
+        d.choicesFromSearch = true; d.choicesFuzzy = false;
+        return step_(d, settings);
+      }
+      d.awaiting = 'ticker'; saveDraft_(d);
+      return reply_('I couldn\'t find "' + esc_(d.searchText) + '" on US or SGX markets. Reply with the exact ticker.',
+        [[['❌ Cancel', d.id + '|x']]]);
     }
     d.awaiting = 'ticker'; saveDraft_(d);
     return reply_('Which stock? Reply with the ticker or company name (e.g. <code>META</code>).',
       [[['❌ Cancel', d.id + '|x']]]);
   }
   if (!d.tickerOk) {
-    var qt = quote_(d.ticker);
+    // Which market? What you said > what you already hold it in > try US, then SGX.
+    var preferred = d.currencyExplicit ? d.currency : (heldCurrency_(d.ticker) || d.currency);
+    var qt = quote_(d.ticker, preferred);
+    if (!qt && preferred && !d.currencyExplicit) qt = quote_(d.ticker);
+    if (!qt && !d.searched && !d.currencyExplicit) {
+      // Not a ticker after all - try it as a search ("sofi" typo, a name, etc.)
+      d.searchText = d.searchText || d.tickerToken || d.ticker.toLowerCase();
+      d.ticker = null; d.choices = [];
+      return step_(d, settings);
+    }
     if (!qt) {
       var bad = d.ticker;
+      var where = d.currencyExplicit ? marketName_(d.currency) : 'US or SGX';
       d.ticker = null; d.choices = []; d.awaiting = 'ticker'; saveDraft_(d);
-      return reply_('I couldn\'t find <b>' + esc_(bad) + '</b> on Google Finance. Reply with the correct ticker.',
+      return reply_('I couldn\'t find <b>' + esc_(bad) + '</b> on ' + where + '. Reply with the correct ticker.',
         [[['❌ Cancel', d.id + '|x']]]);
     }
-    d.tickerOk = true; d.name = qt.name; d.live = qt.price;
+    d.tickerOk = true; d.name = qt.name; d.live = qt.price; d.currency = qt.currency;
   }
 
   // 2. Buy, sell, fee or dividend?
@@ -178,9 +230,9 @@ function step_(d, settings) {
       (d.date === today ? ' today' : ' on ' + fmtDate_(d.date)) + '.';
     if (d.qty != null && d.price == null && d.ambiguous == null && d.live) {
       d.awaiting = 'price'; saveDraft_(d);
-      return reply_(head + ' ' + d.ticker + ' is ' + usd_(d.live) + ' right now.\n' +
+      return reply_(head + ' ' + d.ticker + ' is ' + money_(d.live, d.currency) + ' right now.\n' +
         '<i>…or reply with the price you actually paid</i>', [
-        [['🟢 Buy @ ' + usd_(d.live), d.id + '|ap|BUY'], ['🔴 Sell @ ' + usd_(d.live), d.id + '|ap|SELL']],
+        [['🟢 Buy @ ' + money_(d.live, d.currency), d.id + '|ap|BUY'], ['🔴 Sell @ ' + money_(d.live, d.currency), d.id + '|ap|SELL']],
         [['❌ Cancel', d.id + '|x']]
       ]);
     }
@@ -207,7 +259,7 @@ function step_(d, settings) {
     if (d.ambiguous != null) {
       saveDraft_(d);
       return reply_('Is <b>' + fmtQty_(d.ambiguous) + '</b> the number of shares or the price?', [
-        [[fmtQty_(d.ambiguous) + ' shares', d.id + '|amb|q'], [usd_(d.ambiguous) + ' per share', d.id + '|amb|p']],
+        [[fmtQty_(d.ambiguous) + ' shares', d.id + '|amb|q'], [money_(d.ambiguous, d.currency) + ' per share', d.id + '|amb|p']],
         [['❌ Cancel', d.id + '|x']]
       ]);
     }
@@ -218,9 +270,9 @@ function step_(d, settings) {
     if (d.price == null) {
       if (d.live) {
         d.awaiting = 'price'; saveDraft_(d);
-        return reply_(d.ticker + ' is <b>' + usd_(d.live) + '</b> right now. Use this price?\n' +
+        return reply_(d.ticker + ' is <b>' + money_(d.live, d.currency) + '</b> right now. Use this price?\n' +
           '<i>…or reply with the price you actually paid</i>',
-          [[['✅ Use ' + usd_(d.live), d.id + '|px'], ['❌ Cancel', d.id + '|x']]]);
+          [[['✅ Use ' + money_(d.live, d.currency), d.id + '|px'], ['❌ Cancel', d.id + '|x']]]);
       }
       return askField_(d, 'price');
     }
@@ -237,28 +289,28 @@ function step_(d, settings) {
   if (isTrade_(d) && d.live && !d.priceOk) {
     var off = Math.abs(d.price - d.live) / d.live;
     if (off > settings.warn) {
-      var rows = [[['Yes, ' + usd_(d.price) + ' is right', d.id + '|pok']]];
+      var rows = [[['Yes, ' + money_(d.price, d.currency) + ' is right', d.id + '|pok']]];
       var each = d.qty > 1 ? round_(d.price / d.qty, 4) : null;
       if (each && Math.abs(each - d.live) / d.live <= settings.warn) {
-        rows.push([[usd_(each) + ' each (total ' + usd_(d.price) + ')', d.id + '|pe|' + each]]);
+        rows.push([[money_(each, d.currency) + ' each (total ' + money_(d.price, d.currency) + ')', d.id + '|pe|' + each]]);
       }
       rows.push([['✏️ Change price', d.id + '|e|price'], ['❌ Cancel', d.id + '|x']]);
       saveDraft_(d);
-      return reply_('⚠️ ' + d.ticker + ' is ' + usd_(d.live) + ' right now, but you said <b>' + usd_(d.price) +
+      return reply_('⚠️ ' + d.ticker + ' is ' + money_(d.live, d.currency) + ' right now, but you said <b>' + money_(d.price, d.currency) +
         '</b> per share (' + Math.round(off * 100) + '% ' + (d.price > d.live ? 'above' : 'below') + '). Is that right?', rows);
     }
   }
 
   // 8. Selling more than you hold?
   if (d.action === 'SELL' && !d.qtyOk) {
-    var pos = getPosition_(typeOf_(d), d.ticker);
+    var pos = getPosition_(typeOf_(d), d.currency, d.ticker);
     var held = pos ? pos.qty : 0;
     if (d.qty > held + 1e-9) {
       saveDraft_(d);
       return reply_('⚠️ You only hold <b>' + fmtQty_(held) + ' ' + d.ticker + '</b> (' + typeOf_(d) + '). Sell ' +
         fmtQty_(d.qty) + ' anyway?', [
         [['Continue anyway', d.id + '|qok'], ['✏️ Change quantity', d.id + '|e|qty']],
-        [['🔁 It\'s a ' + (typeOf_(d) === 'CFD' ? 'stock' : 'CFD') + ' position', d.id + '|e|type'], ['❌ Cancel', d.id + '|x']]
+        [['🔁 It\'s a ' + (typeOf_(d) === 'CFD' ? 'shares' : 'CFD') + ' position', d.id + '|e|type'], ['❌ Cancel', d.id + '|x']]
       ]);
     }
   }
@@ -272,9 +324,9 @@ function step_(d, settings) {
 function askField_(d, field, prefix) {
   var q = {
     qty: 'How many shares of <b>' + d.ticker + '</b>?',
-    price: 'What price per share did you ' + (d.action === 'SELL' ? 'sell' : 'pay') + ' (USD)?',
-    fee: 'What was the fee / commission in USD? Reply <code>0</code> for none.',
-    amount: d.action === 'DIVIDEND' ? 'How much was the dividend in USD?' : 'How much was the fee in USD?',
+    price: 'What price per share did you ' + (d.action === 'SELL' ? 'sell' : 'pay') + ' (' + (d.currency || BASE_CCY) + ')?',
+    fee: 'What was the fee / commission in ' + (d.currency || BASE_CCY) + '? Reply <code>0</code> for none.',
+    amount: (d.action === 'DIVIDEND' ? 'How much was the dividend' : 'How much was the fee') + ' in ' + (d.currency || BASE_CCY) + '?',
     date: 'Which date? e.g. <code>today</code>, <code>yesterday</code>, <code>22/9</code>, <code>22 sep</code>',
     ticker: 'Reply with the ticker or company name.'
   }[field];
@@ -291,14 +343,21 @@ function applyAnswer_(d, text, pctx) {
   var f = d.awaiting;
   if (f === 'ticker') {
     var r = parseMessage(text, { today: pctx.today, aliases: pctx.aliases, answerMode: true });
+    // A fresh answer gets its own search if it turns out not to be a ticker
+    d.searched = false; d.choicesFromSearch = false; d.choiceInfo = null; d.profile = null;
+    d.searchText = r.searchText || String(text).trim().toLowerCase();
+    if (r.currencyExplicit) { d.currency = r.currency; d.currencyExplicit = true; }
     if (r.ticker) {
       if (d.choicesFuzzy && d.tickerToken && d.tickerToken !== r.ticker.toLowerCase()) {
         d.learn = { alias: d.tickerToken, ticker: r.ticker };
       }
-      d.ticker = r.ticker; d.tickerOk = false; d.choices = [];
+      d.ticker = r.ticker; d.tickerOk = false; d.choices = []; d.choicesFuzzy = false;
+      if (!r.currencyExplicit && r.currency) d.currency = r.currency;
     } else if (r.tickerChoices.length) {
       d.choices = r.tickerChoices; d.choicesFuzzy = r.tickerFromFuzzy;
       if (r.tickerFromFuzzy) d.tickerToken = r.tickerToken;
+    } else if (r.searchText) {
+      d.ticker = null; d.choices = []; // step_ searches it
     } else {
       reply_('Still not sure which stock that is. Reply with the exact ticker, e.g. <code>PLTR</code>.',
         [[['❌ Cancel', d.id + '|x']]]);
@@ -330,12 +389,14 @@ function applyAnswer_(d, text, pctx) {
 }
 
 function showEditMenu_(d) {
+  var auto = Object.keys(CURRENCIES).filter(function (c) { return CURRENCIES[c].autoDetect; });
+  var nextCcy = auto[(auto.indexOf(d.currency) + 1) % auto.length];
+  var switches = [['→ ' + (typeOf_(d) === 'CFD' ? 'Shares' : 'CFD'), d.id + '|e|type'],
+    ['→ ' + marketName_(nextCcy) + ' (' + nextCcy + ')', d.id + '|e|ccy']];
   var rows = isTrade_(d)
     ? [[['Quantity', d.id + '|e|qty'], ['Price', d.id + '|e|price'], ['Fee', d.id + '|e|fee']],
-       [['Date', d.id + '|e|date'], ['Ticker', d.id + '|e|ticker'],
-        ['→ ' + (typeOf_(d) === 'CFD' ? 'Stock' : 'CFD'), d.id + '|e|type']]]
-    : [[['Amount', d.id + '|e|amount'], ['Date', d.id + '|e|date'], ['Ticker', d.id + '|e|ticker']],
-       [['→ ' + (typeOf_(d) === 'CFD' ? 'Stock' : 'CFD'), d.id + '|e|type']]];
+       [['Date', d.id + '|e|date'], ['Ticker', d.id + '|e|ticker']], switches]
+    : [[['Amount', d.id + '|e|amount'], ['Date', d.id + '|e|date'], ['Ticker', d.id + '|e|ticker']], switches];
   rows.push([['↩️ Back', d.id + '|bk'], ['❌ Cancel', d.id + '|x']]);
   saveDraft_(d);
   return reply_('What do you want to change?', rows);
@@ -343,18 +404,18 @@ function showEditMenu_(d) {
 
 function confirmText_(d) {
   var type = typeOf_(d);
-  var lines = ['<b>Confirm ' + d.action + ' · ' + type + '</b>'];
+  var lines = ['<b>Confirm ' + d.action + ' · ' + type + (d.currency !== BASE_CCY ? ' · ' + d.currency : '') + '</b>'];
   if (isTrade_(d)) {
     var fee = d.fee || 0;
     var total = d.qty * d.price + (d.action === 'BUY' ? fee : -fee);
-    lines.push(fmtQty_(d.qty) + ' × <b>' + d.ticker + '</b> @ ' + usd_(d.price));
-    lines.push(esc_(d.name || d.ticker) + ' · ' + esc_(getSettings_().platform));
-    var fx = fxRate_();
-    lines.push((d.action === 'BUY' ? 'Total cost: ' : 'Proceeds: ') + usd_(total) +
-      (fx ? ' (≈ RM ' + fmtNum_(total * fx, 0) + ')' : ''));
-    lines.push('Fee: ' + (fee ? usd_(fee) : 'none'));
+    lines.push(fmtQty_(d.qty) + ' × <b>' + d.ticker + '</b> @ ' + money_(d.price, d.currency));
+    lines.push(esc_(d.name || d.ticker) + ' · ' + marketName_(d.currency) + ' · ' + esc_(getSettings_().platform));
+    var fx = fxRate_(d.currency, HOME_CCY);
+    lines.push((d.action === 'BUY' ? 'Total cost: ' : 'Proceeds: ') + money_(total, d.currency) +
+      (fx && d.currency !== HOME_CCY ? ' (≈ ' + money_(total * fx, HOME_CCY, 0) + ')' : ''));
+    lines.push('Fee: ' + (fee ? money_(fee, d.currency) : 'none'));
   } else {
-    lines.push('<b>' + d.ticker + '</b> · ' + usd_(d.amount));
+    lines.push('<b>' + d.ticker + '</b> · ' + money_(d.amount, d.currency));
   }
   lines.push('Date: ' + fmtDate_(d.date));
   return lines.join('\n');
@@ -376,26 +437,34 @@ function confirmButtons_(d) {
 function commit_(d, settings) {
   var type = typeOf_(d);
   var entry = {
-    date: d.date, action: d.action, type: type, ticker: d.ticker,
+    date: d.date, action: d.action, type: type, ticker: d.ticker, currency: d.currency || BASE_CCY,
     qty: d.qty, price: d.price, fee: d.fee || 0, amount: d.amount,
     notes: d.source
   };
   var id = appendTransaction_(entry);
   clearDraft_();
   log_('SAVED', d.source, entry);
+  var cat = categoriseNew_(d);
   rebuildHoldings_();
 
   var msg;
   if (isTrade_(d)) {
-    var pos = getPosition_(type, d.ticker);
-    msg = '✅ Logged: ' + d.action + ' ' + fmtQty_(d.qty) + ' ' + d.ticker + ' @ ' + usd_(d.price) + ' (' + type + ')';
-    if (pos && pos.qty > 1e-9) msg += '\nYou now hold <b>' + fmtQty_(pos.qty) + ' ' + d.ticker + '</b> · avg ' + usd_(pos.avg);
-    else if (pos) msg += '\nPosition closed. Realised P/L on ' + d.ticker + ': <b>' + usdSigned_(pos.realised) + '</b>';
+    var pos = getPosition_(type, d.currency, d.ticker);
+    msg = '✅ Logged: ' + d.action + ' ' + fmtQty_(d.qty) + ' ' + d.ticker + ' @ ' + money_(d.price, d.currency) + ' (' + type + ')';
+    if (pos && pos.qty > 1e-9) msg += '\nYou now hold <b>' + fmtQty_(pos.qty) + ' ' + d.ticker + '</b> · avg ' + money_(pos.avg, d.currency);
+    else if (pos) msg += '\nPosition closed. Realised P/L on ' + d.ticker + ': <b>' + moneySigned_(pos.realised, d.currency) + '</b>';
   } else {
-    msg = '✅ Logged ' + (d.action === 'FEE' ? 'fee' : 'dividend') + ' ' + usd_(d.amount) + ' on ' + d.ticker + ' (' + type + ')';
+    msg = '✅ Logged ' + (d.action === 'FEE' ? 'fee' : 'dividend') + ' ' + money_(d.amount, d.currency) + ' on ' + d.ticker + ' (' + type + ')';
   }
   msg += '\n<i>Send undo to remove it.</i>';
   reply_(msg);
+
+  // New ticker: show what it was categorised as, or ask
+  if (cat.status === 'auto') {
+    reply_('🏷 <b>' + d.ticker + '</b>: ' + describeCat_(cat.cat), [[['✏️ Change', 'c|' + d.ticker]]]);
+  } else if (cat.status === 'ask') {
+    askAssetType_(d.ticker, 'New ticker - I couldn\'t look up what <b>' + d.ticker + '</b> is.');
+  }
 
   if (d.learn && d.learn.alias && d.learn.alias.length <= 30 && !settings.aliases[d.learn.alias]) {
     reply_('Save "' + esc_(d.learn.alias) + '" → <b>' + d.learn.ticker + '</b> so I recognise it next time?', [[
@@ -408,6 +477,68 @@ function commit_(d, settings) {
 // ---------------------------------------------------------------------------
 // Undo
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Categories (asset type + GICS sector), one per ticker
+// ---------------------------------------------------------------------------
+
+/** For a ticker without a category: use the search result, else look it up on Yahoo. */
+function categoriseNew_(d) {
+  if (readCategories_()[d.ticker]) return { status: 'known' };
+  var fromSearch = d.profile && (d.profile.assetType !== 'Company' || d.profile.sector);
+  var c = fromSearch ? d.profile : yahooProfile_(d.ticker, d.currency);
+  if (!c) return { status: 'ask' };
+  c = { name: c.name || d.name, assetType: c.assetType, sector: c.sector, industry: c.industry };
+  saveCategory_(d.ticker, c, 'auto');
+  return { status: 'auto', cat: c };
+}
+
+function describeCat_(c) {
+  if (c.assetType === 'ETF') return 'ETF';
+  return c.assetType + ' · ' + (c.sector || UNCATEGORISED) + (c.industry ? ' <i>(' + esc_(c.industry) + ')</i>' : '');
+}
+
+function askAssetType_(ticker, intro) {
+  return reply_((intro ? intro + '\n' : '') + 'What is <b>' + ticker + '</b>?', [
+    ASSET_TYPES.map(function (a) { return [a, 'c|' + ticker + '|a|' + a]; }),
+    [['Skip for now', 'c|' + ticker + '|skip']]
+  ]);
+}
+
+function askSector_(ticker) {
+  var rows = [], row = [];
+  SECTORS.forEach(function (sct, i) {
+    row.push([sct[1], 'c|' + ticker + '|s|' + i]);
+    if (row.length === 3) { rows.push(row); row = []; }
+  });
+  if (row.length) rows.push(row);
+  return reply_('Which sector is <b>' + ticker + '</b>?', rows);
+}
+
+/** Buttons: c|TICKER (change) · c|TICKER|a|ETF · c|TICKER|s|4 · c|TICKER|skip */
+function handleCategoryTap_(messageId, parts) {
+  clearButtons_(messageId);
+  var ticker = parts[1], what = parts[2], val = parts[3];
+  if (!what) return askAssetType_(ticker);
+  if (what === 'skip') {
+    return reply_('OK - ' + ticker + ' shows as ' + UNCATEGORISED + '. You can set it on the Categories tab.');
+  }
+  var existing = readCategories_()[ticker] || {};
+  var c;
+  if (what === 'a') {
+    if (val === 'Company') return askSector_(ticker);
+    c = { assetType: val, sector: val === 'REIT' ? 'Real Estate' : '', industry: existing.industry, name: existing.name };
+  } else if (what === 's') {
+    var sct = SECTORS[Number(val)];
+    if (!sct) return;
+    c = { assetType: 'Company', sector: sct[0], industry: existing.industry, name: existing.name };
+  } else {
+    return;
+  }
+  saveCategory_(ticker, c, 'you');
+  rebuildHoldings_();
+  return reply_('🏷 Saved: <b>' + ticker + '</b> · ' + describeCat_(c));
+}
 
 function startUndo_() {
   var t = lastTransaction_();
@@ -430,8 +561,8 @@ function finishUndo_(messageId, id, answer) {
 
 function describeTx_(t) {
   var body = (t.action === 'BUY' || t.action === 'SELL')
-    ? t.action + ' ' + fmtQty_(t.qty) + ' ' + t.ticker + ' @ ' + usd_(t.price) + (t.fee ? ' + fee ' + usd_(t.fee) : '')
-    : t.action + ' ' + t.ticker + ' ' + usd_(t.amount);
+    ? t.action + ' ' + fmtQty_(t.qty) + ' ' + t.ticker + ' @ ' + money_(t.price, t.currency) + (t.fee ? ' + fee ' + money_(t.fee, t.currency) : '')
+    : t.action + ' ' + t.ticker + ' ' + money_(t.amount, t.currency);
   return body + ' · ' + t.type + ' · ' + fmtDate_(t.date);
 }
 
@@ -445,43 +576,68 @@ function sendPortfolio_() {
     return reply_('Prices are still loading in the sheet - try again in a few seconds.');
   }
   var lines = ['💼 <b>Portfolio</b>',
-    'Worth: <b>' + usd_(p.worth) + '</b>' + (typeof p.worthMyr === 'number' ? ' (RM ' + fmtNum_(p.worthMyr, 0) + ')' : ''),
-    'Cost: ' + usd_(p.cost),
-    'P/L: <b>' + usdSigned_(p.unrealised) + '</b> (' + pctSigned_(p.pct) + ') · Today ' + usdSigned_(p.today)];
-  if (typeof p.other === 'number' && Math.abs(p.other) > 0.005) lines.push('Realised + dividends − fees: ' + usdSigned_(p.other));
+    'Worth: <b>' + money_(p.worth, BASE_CCY) + '</b>' +
+      (typeof p.worthHome === 'number' ? ' (' + money_(p.worthHome, HOME_CCY, 0) + ')' : ''),
+    'Cost: ' + money_(p.cost, BASE_CCY),
+    'P/L: <b>' + moneySigned_(p.unrealised, BASE_CCY) + '</b> (' + pctSigned_(p.pct) + ') · Today ' +
+      moneySigned_(p.today, BASE_CCY)];
+  if (typeof p.other === 'number' && Math.abs(p.other) > 0.005) {
+    lines.push('Realised + dividends − fees: ' + moneySigned_(p.other, BASE_CCY));
+  }
+  if (p.currencies.length > 1) {
+    lines.push('', '<b>By currency</b>');
+    p.currencies.forEach(function (c) {
+      lines.push('<code>' + pad_(c.ccy, 4) + '</code> ' + money_(c.worth, c.ccy, 0) +
+        (c.ccy !== BASE_CCY && typeof c.worthBase === 'number' ? ' (≈ ' + money_(c.worthBase, BASE_CCY, 0) + ')' : '') +
+        ' · ' + pct_(c.weight) + ' · P/L ' + moneySigned_(c.pl, c.ccy) + ' (' + pctSigned_(c.pct) + ')');
+    });
+  }
+  if (p.sectors && p.sectors.length) {
+    lines.push('', '<b>By sector</b>');
+    lines.push(p.sectors.map(function (s) { return esc_(s.name) + ' ' + pct_(s.weight); }).join(' · '));
+  }
+  var any = false;
   p.sections.forEach(function (s) {
     if (!s.rows.length) return;
-    lines.push('', '<b>' + s.name + '</b>');
-    s.rows.sort(function (a, b) { return (Number(b.worth) || 0) - (Number(a.worth) || 0); });
+    any = true;
+    lines.push('', '<b>' + (s.type === 'CFD' ? 'CFDs' : 'Shares') + ' · ' + s.currency + '</b>');
+    s.rows.sort(function (a, b) { return (Number(b.weight) || 0) - (Number(a.weight) || 0); });
     s.rows.forEach(function (r) {
-      lines.push('<code>' + pad_(r.ticker, 6) + '</code> ' + pct_(r.weight) + ' · ' + usd_(r.worth, 0) + ' · ' + pctSigned_(r.plPct));
+      lines.push('<code>' + pad_(r.ticker, 6) + '</code> ' + pct_(r.weight) + ' · ' + money_(r.worth, s.currency, 0) +
+        ' · ' + pctSigned_(r.plPct));
     });
   });
-  if (!p.sections[0].rows.length && !p.sections[1].rows.length) lines.push('', 'No open positions yet.');
+  if (!any) lines.push('', 'No open positions yet.');
   return reply_(lines.join('\n'));
 }
 
 function sendPosition_(ticker) {
   var all = computePositions(readTransactions_()).filter(function (p) { return p.ticker === ticker; });
-  var q = quote_(ticker);
-  var lines = ['<b>' + ticker + '</b>' + (q ? ' · ' + esc_(q.name) + ' · ' + usd_(q.price) : '')];
-  if (!all.length) {
-    lines.push('You don\'t hold any ' + ticker + '.');
-  }
+  var quotes = {};
+  var quoteFor = function (ccy) {
+    if (!(ccy in quotes)) quotes[ccy] = quote_(ticker, ccy);
+    return quotes[ccy];
+  };
+  var head = all.length ? quoteFor(all[0].currency) : quote_(ticker);
+  var lines = ['<b>' + ticker + '</b>' + (head ? ' · ' + esc_(head.name) + ' · ' + money_(head.price, head.currency) : '')];
+  if (!all.length) lines.push('You don\'t hold any ' + ticker + '.');
   all.forEach(function (p) {
-    lines.push('', '<b>' + p.type + '</b>');
+    var c = p.currency;
+    lines.push('', '<b>' + p.type + (c !== BASE_CCY ? ' · ' + c : '') + '</b>');
     if (p.qty > 1e-9) {
-      lines.push(fmtQty_(p.qty) + ' shares · avg ' + usd_(p.avg) + ' · cost ' + usd_(p.cost));
+      lines.push(fmtQty_(p.qty) + ' shares · avg ' + money_(p.avg, c) + ' · cost ' + money_(p.cost, c));
+      var q = quoteFor(c);
       if (q) {
         var worth = p.qty * q.price, pl = worth - p.cost;
-        lines.push('Worth ' + usd_(worth) + ' · P/L <b>' + usdSigned_(pl) + '</b> (' + pctSigned_(p.cost ? pl / p.cost : 0) + ')');
+        lines.push('Worth ' + money_(worth, c) + ' · P/L <b>' + moneySigned_(pl, c) + '</b> (' +
+          pctSigned_(p.cost ? pl / p.cost : 0) + ')');
       }
     } else {
       lines.push('Closed position');
     }
-    if (Math.abs(p.realised) > 0.005) lines.push('Realised: ' + usdSigned_(p.realised));
-    if (p.dividends) lines.push('Dividends: ' + usd_(p.dividends));
-    if (p.fees) lines.push('Fees & financing: ' + usd_(p.fees));
+    if (Math.abs(p.realised) > 0.005) lines.push('Realised: ' + moneySigned_(p.realised, c));
+    if (p.dividends) lines.push('Dividends: ' + money_(p.dividends, c));
+    if (p.fees) lines.push('Fees & financing: ' + money_(p.fees, c));
   });
   return reply_(lines.join('\n'));
 }
@@ -497,12 +653,14 @@ function helpText_() {
     '<code>bought 2 tsla 250 yesterday</code>  (or 22/9, 22 sep, friday)',
     '<code>cfd fee meta 2.30</code>  (financing / charges)',
     '<code>dividend aapl 3.20</code>',
+    '<code>bought 1300 buou 0.88</code>  (SGX - also dbs, ocbc, c38u…)',
     '',
     '<b>Commands</b>',
     '<code>portfolio</code> - summary · <code>meta</code> - one position',
     '<code>undo</code> - remove last entry · <code>cancel</code> - drop the current one',
     '',
-    'Type defaults to STOCK - add <code>cfd</code> for CFDs. Prices are in USD.'
+    'You hold SHARES by default - add <code>cfd</code> for CFDs. Market is detected (US first, then SGX); ' +
+      'add <code>sgx</code> or <code>sgd</code> to be explicit.'
   ].join('\n');
 }
 
@@ -516,12 +674,18 @@ function fmtNum_(n, dp) {
   parts[0] = parts[0].replace(/\B(?=(\d{3})+(?!\d))/g, ',');
   return parts.join('.');
 }
-function usd_(n, dp) {
+/** "$1,234.56", "S$0.885", "RM 5,000" */
+function money_(n, ccy, dp) {
   if (typeof n !== 'number' || !isFinite(n)) return '-';
-  var d = dp != null ? dp : (Math.abs(n) < 1 && n !== 0 ? 4 : 2);
-  return (n < 0 ? '-$' : '$') + fmtNum_(Math.abs(n), d);
+  var sym = (CURRENCIES[ccy || BASE_CCY] || {}).symbol || (ccy + ' ');
+  if (sym === 'RM') sym = 'RM ';
+  var d = dp != null ? dp : (Math.abs(n) < 1 ? 4 : Math.abs(n) < 10 ? 3 : 2);
+  var s = fmtNum_(Math.abs(n), d);
+  if (dp == null) s = s.replace(/(\.\d\d\d*?)0+$/, '$1'); // 0.8800 -> 0.88, keep 0.885
+  return (n < 0 ? '-' : '') + sym + s;
 }
-function usdSigned_(n) { return typeof n === 'number' ? (n > 0 ? '+' : '') + usd_(n) : '-'; }
+function moneySigned_(n, ccy) { return typeof n === 'number' ? (n > 0 ? '+' : '') + money_(n, ccy) : '-'; }
+function marketName_(ccy) { return { USD: 'US', SGD: 'SGX', HKD: 'HKEX', MYR: 'Bursa', AUD: 'ASX', GBP: 'LSE' }[ccy] || ccy; }
 function pct_(n) { return typeof n === 'number' ? (n * 100).toFixed(1) + '%' : '-'; }
 function pctSigned_(n) { return typeof n === 'number' ? (n > 0 ? '+' : '') + (n * 100).toFixed(1) + '%' : '-'; }
 function fmtQty_(n) { return String(Math.round(Number(n) * 10000) / 10000); }

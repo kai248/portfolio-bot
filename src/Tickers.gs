@@ -55,6 +55,37 @@ var NAME_ALIASES = {
   'nasdaq': ['QQQ', 'QQQM']
 };
 
+/**
+ * Singapore (SGX) names -> SGX stock codes. These are priced in SGD via Yahoo Finance.
+ * Any other SGX code also works: type it (e.g. "C38U") or add "sgx"/"sgd" to your message.
+ */
+var SGX_ALIASES = {
+  'dbs': 'D05', 'ocbc': 'O39', 'uob': 'U11', 'singtel': 'Z74', 'sia': 'C6L',
+  'singapore airlines': 'C6L', 'capitaland': '9CI', 'capitaland investment': '9CI',
+  'keppel': 'BN4', 'sats': 'S58', 'genting singapore': 'G13', 'st engineering': 'S63',
+  'stengg': 'S63', 'wilmar': 'F34', 'thaibev': 'Y92', 'thai bev': 'Y92', 'sembcorp': 'U96',
+  'frasers logistics': 'BUOU', 'flct': 'BUOU', 'clar': 'A17U', 'capitaland ascendas': 'A17U',
+  'mapletree industrial': 'ME8U', 'mapletree logistics': 'M44U', 'mapletree pan asia': 'N2IU',
+  'mpact': 'N2IU', 'cict': 'C38U', 'capitaland integrated': 'C38U', 'sti etf': 'ES3',
+  'yangzijiang': 'BS6', 'yzj': 'BS6', 'hongkong land': 'H78', 'jardine': 'J36',
+  'jardine matheson': 'J36', 'keppel dc': 'AJBU', 'frasers centrepoint': 'J69U', 'fct': 'J69U',
+  'suntec': 'T82U', 'suntec reit': 'T82U', 'city developments': 'C09', 'cdl': 'C09', 'uol': 'U14',
+  'comfortdelgro': 'C52', 'sheng siong': 'OV8', 'ifast': 'AIY', 'sgx group': 'S68',
+  'venture corp': 'V03', 'parkwaylife': 'C2PU', 'parkway life': 'C2PU', 'cromwell': 'CWBU',
+  'digital core': 'DCRU', 'ntt reit': 'NTDU', 'lendlease reit': 'JYEU', 'cdl reit': 'J85',
+  'far east hospitality': 'Q5T', 'seatrium': '5E2', 'yzj financial': 'YF8'
+};
+/** SGX codes that should default to SGD. */
+var SGX_TICKERS = (function () {
+  var s = {};
+  Object.keys(SGX_ALIASES).forEach(function (k) { s[SGX_ALIASES[k]] = true; });
+  ['D05', 'O39', 'U11', 'Z74', 'C6L', 'S68', 'ES3', 'G3B', 'CLR', 'A35', 'O87', 'SRT',
+    'K71U', 'CJLU', 'AU8U', 'HMN', 'M1GU', 'OXMU', 'P40U', 'BTOU', 'TS0U', 'SK6U', 'D5IU',
+    'C61U', 'JYEU', 'ACV', 'Q0X', 'BVA', 'V01', 'E5H', 'F9D', 'H02', 'U09', 'EB5', 'S7OU']
+    .forEach(function (t) { s[t] = true; });
+  return s;
+})();
+
 /** Extra tickers recognised on sight (on top of every ticker in NAME_ALIASES). */
 var EXTRA_TICKERS = [
   'SPY', 'VOO', 'IVV', 'QQQ', 'QQQM', 'VTI', 'VT', 'SCHD', 'VGT', 'SMH', 'SOXX', 'SOXL',

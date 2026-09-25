@@ -57,28 +57,37 @@ bought 3 meta at 500          sold 2 aapl 230 fee 1
 bought 5 nvda cfd 121.5       bought 3 meta          (offers the live price)
 bought 2 tsla 250 yesterday   (or 22/9, 22 sep, friday)
 cfd fee meta 2.30             dividend aapl 3.20
+bought 1300 buou 0.88         bought 100 dbs 77.5    (SGX, priced in SGD)
 portfolio   meta   undo   cancel   help
 ```
 
 - Nothing is saved until you tap **✅ Confirm** (or reply `yes`).
 - If something is missing or looks wrong, the bot asks you instead of guessing.
-- Type defaults to **STOCK**. Add `cfd` for CFDs. A fee message with no type counts as **CFD**.
+- You hold **SHARES** by default. Add `cfd` for CFDs. A fee message with no type counts as **CFD**.
+- **Don't know the ticker?** Type the name (`rocket lab`, `mapletree`, `sti etf`). If it's not in the bot's list, the bot searches Yahoo and shows buttons for the US and SGX matches.
+- **New tickers are categorised automatically** after you confirm (e.g. *🏷 SOFI: Company · Financials*), with a **✏️ Change** button. If the bot can't look it up, it asks you with buttons: Company / ETF / REIT, then the sector.
+- **Market / currency** is worked out for you. It uses the currency you already hold the stock in if there is one. Otherwise it checks the US market first, then SGX. Known SGX codes and names (`D05`, `C38U`, `dbs`, `ocbc`…) go straight to SGX. Add `sgx`/`sgd` (or write `s$0.88`) to say it yourself, or change it with **✏️ Edit** on the confirm message.
 - To check how the bot reads a message without saving anything, use **Portfolio → Test a message** in the sheet.
 
 ## The tabs
 
 | Tab | What it does |
 |---|---|
-| **Dashboard** | Headline numbers and charts. The value-over-time chart fills in from daily snapshots. |
-| **Holdings** | Rebuilt automatically from Transactions. The Stocks and CFDs sections use your columns, plus P/L %, today's change, realised P/L, dividends and fees. |
-| **Transactions** | Every confirmed entry. You can edit a row by hand and Holdings updates itself. |
+| **Dashboard** | Headline numbers; tables for **by currency**, **by sector** (ETFs get their own slice) and **by asset type**; pie charts for sector, position, asset type, currency and Shares vs CFDs; and a value-over-time line built from the daily snapshots. |
+| **Holdings** | Rebuilt automatically from Transactions. It starts with a **By currency** table: worth, P/L and today's change per currency, each converted to USD and shown as a share of the portfolio. Below that, a section per type and currency (Stocks · USD, Stocks · SGD, CFDs · USD…), each in its own currency, using your columns plus P/L %, today's change, realised P/L, dividends and fees. |
+| **Transactions** | Every confirmed entry. You can edit a row by hand and Holdings updates itself. **Currency** is USD for US stocks and SGD for SGX stocks; Price, Fee and Amount are in that currency. Use plain tickers (`AAPL`, not IBKR's CFD name `AAPLn`, although `AAPLn` on a CFD row is fixed automatically). |
+| **Categories** | One row per ticker: **Asset type** (Company / ETF / REIT) and **Sector** (the 11 GICS sectors). Filled in from Yahoo automatically; anything you set yourself is marked `you`. Edit a row and Holdings updates. Use **Portfolio → Categorise all tickers** to fill in anything missing. |
+| **Prices** | Prices for SGX and other non-US stocks, from Yahoo Finance (Google Finance doesn't cover SGX). Refreshed every 15 minutes during Asian market hours, and whenever holdings change. |
 | **Bot Log** | Every message in and out, how it was read, and any errors. Check here first when debugging. |
 | **Settings** | Your chat ID, the price-warning threshold (default 30%) and ticker aliases (the words you type, mapped to tickers). |
 | **History** | One row per day at about 7am MYT (after the US market closes). This feeds the line chart. |
 
-**How the numbers work:** average-cost method. Commission is included in your average cost. Selling doesn't change your average cost; the gain or loss on the shares sold goes into **Realised P/L**. CFDs count at full position size. MYR values use today's USD/MYR rate.
+**How the numbers work:** average-cost method. Commission is included in your average cost. Selling doesn't change your average cost; the gain or loss on the shares sold goes into **Realised P/L**. CFDs count at full position size. Each currency is totalled in its own currency; the combined total converts everything to USD (and MYR) at today's exchange rates.
 
 ## Changing the code later
+
+After pasting in new code, **run `setup` again**. It's safe: it never deletes your Transactions, Settings or History. It adds any new tabs, columns and triggers (for example the Currency column and the Prices tab).
+
 
 After editing, go to **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**.
 The URL stays the same, so you don't need to reconnect Telegram.
@@ -88,4 +97,5 @@ The URL stays the same, so you don't need to reconnect Telegram.
 - **Bot doesn't reply:** go to **Portfolio → Check Telegram connection** and look at `last_error_message`. Then check the **Bot Log** tab and **Apps Script → Executions**.
 - **You see `Wrong response from the webhook: 302`:** this is normal for Apps Script. The bot ignores duplicate deliveries. If replies stop arriving, run **`usePolling`** once. Replies then take up to about 1 minute, but it's very reliable. Run `connectTelegram` to switch back.
 - **A price shows blank or "Loading":** GOOGLEFINANCE is sometimes slow. Wait a moment, or use **Portfolio → Rebuild holdings**.
+- **An SGX price is blank:** use **Portfolio → Refresh SGX / non-US prices** and check the **Prices** tab. If Yahoo is blocking requests, the **Bot Log** shows `PRICE-ERROR` rows.
 - **A ticker isn't recognised:** type it exactly (e.g. `SOFI`), or add a row in **Settings → Ticker aliases**.
