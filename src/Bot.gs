@@ -409,6 +409,11 @@ function confirmText_(d) {
     var fee = d.fee || 0;
     var total = d.qty * d.price + (d.action === 'BUY' ? fee : -fee);
     lines.push(fmtQty_(d.qty) + ' × <b>' + d.ticker + '</b> @ ' + money_(d.price, d.currency));
+    if (d.live) {
+      var diff = (d.price - d.live) / d.live;
+      lines.push('Live price: ' + money_(d.live, d.currency) +
+        (Math.abs(diff) >= 0.0005 ? ' (yours is ' + pctSigned_(diff) + ')' : ' (same)'));
+    }
     lines.push(esc_(d.name || d.ticker) + ' · ' + marketName_(d.currency) + ' · ' + esc_(getSettings_().platform));
     var fx = fxRate_(d.currency, HOME_CCY);
     lines.push((d.action === 'BUY' ? 'Total cost: ' : 'Proceeds: ') + money_(total, d.currency) +
